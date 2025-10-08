@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeskFlow AI</title>
+
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<!-- TensorFlow + PoseNet -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.9.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/posenet"></script>
+
+<!-- Firebase (compat) -->
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+
+<style>
+  body, html { margin:0; padding:0; height:100%; font-family:'Poppins',sans-serif; overflow:hidden; background:#0f172a; position:relative;}
+  canvas#bgCanvas { position:fixed; top:0; left:0; width:100%; height:100%; z-index:-1; }
+
+  /* Neon/glow styles */
+  .neon-card { background: rgba(20,20,30,0.8); border: 1px solid #0ff0fc; box-shadow: 0 0 15px #0ff0fc; transition: all 0.3s ease; }
+  .neon-card:hover { box-shadow: 0 0 25px #0ff0fc, 0 0 40px #0ff0fc; transform: translateY(-3px); }
+  .neon-btn { background: linear-gradient(90deg,#0ff0fc,#00ff99); color:#000; font-weight:bold; transition: all 0.3s ease; }
+  .neon-btn:hover { box-shadow: 0 0 15px #0ff0fc, 0 0 25px #00ff99; transform: scale(1.05); }
+  #popup-overlay .neon-popup { box-shadow: 0 0 20px #fffb00, 0 0 35px #ff0099, 0 0 50px #00ff99; }
+</style>
+</head>
+<body class="text-white flex items-center justify-center h-screen flex-col">
+
+<canvas id="bgCanvas"></canvas>
+
+<!-- Login / Signup -->
+<div id="auth-section" class="bg-gray-900/80 p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+  <h2 class="text-3xl font-bold mb-6 text-blue-400">DeskFlow AI</h2>
+  <input id="email" type="email" placeholder="Email" class="w-full p-3 mb-3 rounded text-black" />
+  <input id="password" type="password" placeholder="Password" class="w-full p-3 mb-4 rounded text-black" />
+  <button id="login-btn" class="w-full neon-btn py-2 rounded-lg mb-2">Login</button>
+  <button id="signup-btn" class="w-full neon-btn py-2 rounded-lg">Sign Up</button>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard" class="hidden flex flex-col items-center mt-4 w-full max-w-6xl">
+  <h1 class="text-4xl mb-6 text-blue-400 font-bold">DeskFlow AI Dashboard</h1>
+
+  <!-- Stats Cards -->
+  <div class="flex flex-wrap justify-center gap-6 mb-6 w-full">
+    <div class="neon-card p-4 w-60 text-center rounded-xl">
+      <h3 class="font-bold text-lg mb-2">Posture Score</h3>
+      <p id="posture-score" class="text-2xl text-blue-400">0</p>
+    </div>
+    <div class="neon-card p-4 w-60 text-center rounded-xl">
+      <h3 class="font-bold text-lg mb-2">Activity Events (5s)</h3>
+      <p id="activity-count" class="text-2xl text-green-400">0</p>
+    </div>
+    <div class="neon-card p-4 w-60 text-center rounded-xl">
+      <h3 class="font-bold text-lg mb-2">Degradation %</h3>
+      <p id="degradation" class="text-2xl text-yellow-400">0%</p>
+    </div>
+    <div class="neon-card p-4 w-60 text-center rounded-xl">
+      <h3 class="font-bold text-lg mb-2">Last Break Taken</h3>
+      <p id="last-break" class="text-2xl text-red-400">Never</p>
+    </div>
+  </div>
+
+  <div class="flex flex-wrap justify-center gap-6 w-full">
+    <video id="webcam" autoplay playsinline class="rounded-lg border-4 border-gradient-to-r from-blue-400 via-green-400 to-pink-400 w-96 h-72 shadow-lg"></video>
+    
+    <div class="neon-card p-4 rounded-xl w-96">
+      <canvas id="chart" width="400" height="200"></canvas>
+    </div>
+  </div>
+
+  <div class="flex mt-6 gap-4">
+    <button id="logout-btn" class="neon-btn py-2 px-4 rounded-lg">Logout</button>
+  </div>
+</div>
+
+<!-- Predictive Break Popup -->
+<div id="popup-overlay" class="fixed inset-0 bg-black/50 hidden items-center justify-center z-50">
+  <div class="neon-popup bg-yellow-400 rounded-xl p-6 shadow-lg text-black text-center max-w-sm">
+    <h2 class="text-2xl font-bold mb-4">⚠️ Predictive Break!</h2>
+    <p class="mb-4">Your posture is deteriorating while working intensely. Take a short break!</p>
+    <button id="popup-ok" class="neon-btn px-4 py-2 rounded-lg">OK</button>
+  </div>
+</div>
+
+<script>
+window.onload = () => {
+
+  // ================= Firebase Config =================
+  const firebaseConfig = {
+  apiKey: "AIzaSyBmnuqSzS_dhjhrYtDYp_5hsZxVXJwFgqM",
+  authDomain: "deskflow-ai-b31a8.firebaseapp.com",
+  projectId: "deskflow-ai-b31a8",
+  storageBucket: "deskflow-ai-b31a8.firebasestorage.app",
+  messagingSenderId: "46072337175",
+  appId: "1:46072337175:web:3a1d2263173f2c20bd5d52"
+};
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+
+  // ================= Auth Buttons =================
+  const loginBtn = document.getElementById("login-btn");
+  const signupBtn = document.getElementById("signup-btn");
+  const logoutBtn = document.getElementById("logout-btn");
+  const authSection = document.getElementById("auth-section");
+  const dashboard = document.getElementById("dashboard");
+
+  loginBtn.addEventListener("click", async () => {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    try { await auth.signInWithEmailAndPassword(email, password); switchToDashboard(); }
+    catch(e){ alert("Login failed: "+e.message); }
+  });
+
+  signupBtn.addEventListener("click", async () => {
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    try { await auth.createUserWithEmailAndPassword(email, password); switchToDashboard(); }
+    catch(e){ alert("Signup failed: "+e.message); }
+  });
+
+  logoutBtn.addEventListener("click", async () => {
+    await auth.signOut();
+    dashboard.style.display = "none";
+    authSection.style.display = "block";
+  });
+
+  function switchToDashboard(){
+    authSection.style.display = "none";
+    dashboard.style.display = "flex";
+    initPoseNet();
+  }
+
+  // ================= Floating Circles Background =================
+  const bgCanvas = document.getElementById('bgCanvas');
+  const bgCtx = bgCanvas.getContext('2d');
+  let circles = [];
+  function resizeCanvas(){ bgCanvas.width = window.innerWidth; bgCanvas.height = window.innerHeight; }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  for(let i=0;i<50;i++){
+    circles.push({
+      x: Math.random()*bgCanvas.width,
+      y: Math.random()*bgCanvas.height,
+      radius: 5+Math.random()*15,
+      color: `hsl(${Math.random()*360},70%,60%)`,
+      dx: (Math.random()-0.5)*1.5,
+      dy: (Math.random()-0.5)*1.5
+    });
+  }
+
+  function animateBG(){
+    bgCtx.clearRect(0,0,bgCanvas.width,bgCanvas.height);
+    for(let c of circles){
+      c.x+=c.dx; c.y+=c.dy;
+      if(c.x<0||c.x>bgCanvas.width)c.dx*=-1;
+      if(c.y<0||c.y>bgCanvas.height)c.dy*=-1;
+      bgCtx.beginPath();
+      bgCtx.arc(c.x,c.y,c.radius,0,Math.PI*2);
+      bgCtx.fillStyle=c.color;
+      bgCtx.fill();
+    }
+    requestAnimationFrame(animateBG);
+  }
+  animateBG();
+
+  // ================= Predictive Break Popup =================
+  const popupOverlay = document.getElementById('popup-overlay');
+  const popupOk = document.getElementById('popup-ok');
+
+  function showBreakPopup(){
+    popupOverlay.style.display = 'flex';
+    popupOk.onclick = () => {
+      popupOverlay.style.display = 'none';
+      baselineScores.splice(0, baselineScores.length, ...recentScores);
+      recentScores.splice(0, recentScores.length);
+      document.getElementById("last-break").innerText = new Date().toLocaleTimeString();
+    };
+  }
+
+  // ================= PoseNet + Chart + Live Stats + Predictive Break =================
+  let baselineScores=[], recentScores=[];
+
+  async function initPoseNet(){
+    const video = document.getElementById("webcam");
+    const stream = await navigator.mediaDevices.getUserMedia({ video:true });
+    video.srcObject = stream;
+
+    const net = await posenet.load();
+    const chartCtx = document.getElementById('chart').getContext('2d');
+    const postureData = [];
+    const chart = new Chart(chartCtx, {
+      type:'line',
+      data:{labels:[], datasets:[{label:'Posture', data:postureData, borderColor:'#0ff0fc', tension:0.4, fill:false}]},
+      options:{scales:{y:{beginAtZero:true,max:100}}, animation:{duration:500, easing:'easeOutQuart'}}
+    });
+
+    let activityCount = 0;
+    document.addEventListener("keydown", ()=>activityCount++);
+    document.addEventListener("mousedown", ()=>activityCount++);
+
+    let lastCheck = Date.now();
+
+    async function analyze(){
+      const pose = await net.estimateSinglePose(video, { flipHorizontal:true });
+      const score = Math.min(Math.round(pose.score*100),100);
+
+      // Update chart
+      if(postureData.length>30){ postureData.shift(); chart.data.labels.shift(); }
+      postureData.push(score); chart.data.labels.push(''); chart.update();
+
+      // Update live cards
+      document.getElementById("posture-score").innerText = score;
+      document.getElementById("activity-count").innerText = activityCount;
+
+      if(baselineScores.length<15) baselineScores.push(score);
+      else recentScores.push(score);
+
+      if(recentScores.length>=15){
+        const baseAvg = baselineScores.reduce((a,b)=>a+b)/baselineScores.length;
+        const recentAvg = recentScores.reduce((a,b)=>a+b)/recentScores.length;
+        const degradation = ((baseAvg-recentAvg)/baseAvg)*100;
+        document.getElementById("degradation").innerText = degradation.toFixed(1) + "%";
+
+        if(Date.now()-lastCheck>=5000){
+          if(degradation>=20 && activityCount>=10){
+            showBreakPopup();
+          }
+          lastCheck = Date.now();
+          activityCount = 0;
+        }
+      }
+
+      requestAnimationFrame(analyze);
+    }
+    analyze();
+  }
+
+};
+</script>
+</body>
+</html>
